@@ -27,10 +27,3 @@ class MindNode:
         if self.model is None:
             # simple heuristic: more punctuation -> assumed complexity -> higher logic score
             score = min(0.95, max(0.05, (text.count('.') + text.count('?')) / 10.0))
-            return float(score), {'mode': 'heuristic'}
-        inputs = self.tokenizer(text, return_tensors='pt', truncation=True, max_length=256)
-        with torch.no_grad():
-            logits = self.model(**inputs).logits
-        probs = np.exp(logits.numpy()) / np.exp(logits.numpy()).sum(axis=1, keepdims=True)
-        score = float(probs.max())
-        return score, {'mode': 'model'}
