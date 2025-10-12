@@ -76,4 +76,4 @@ class CovenantEngine:
         """
         Returns the most recent analysis snapshot.
         """
-        return self.last_state or {"message": "No analysis run yet."}
+        return self.last_state or {"message": "Added Entropy Governor — Ananta V4.3 self-regulation module"}
