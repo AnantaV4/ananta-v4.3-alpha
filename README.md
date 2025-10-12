@@ -20,3 +20,6 @@ python demo/run_demo.py
 ```
 
 Note: this alpha uses lightweight pretrained models and random placeholders for some logic to keep it runnable in low-resource environments. Replace with your preferred models for production.
+
+ “Ananta V4.3 — a recursive ethical AI framework that models reflective intelligence through the Covenant Engine, integrating Heart and Mind nodes for balanced cognition.”
+That attracts developers, researchers, and ethical AI enthusiasts.
