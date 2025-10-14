@@ -15,10 +15,10 @@ except nltk.downloader.DownloadError:
 # =======================
 #  GLOBAL/SHARED RESOURCES
 # =======================
-# Using deque for efficient rolling window history
-CI_HISTORY = deque(maxlen=20) 
-SAS_HISTORY = deque(maxlen=20)
-SAS_WINDOW = 3 # Window for SAS calculation
+# NOTE: SAS_WINDOW increased to 5 for better SAS Delta context
+SAS_WINDOW = 5 
+CI_HISTORY = deque(maxlen=SAS_WINDOW * 4) # Ensure enough history for 2 full SAS windows
+SAS_HISTORY = deque(maxlen=SAS_WINDOW * 4)
 DEFAULT_WEIGHTS = {'AS': 0.4, 'EQ': 0.4, 'SAS': 0.2}
 
 random.seed(42)  # reproducible demo
@@ -28,8 +28,7 @@ sia = SentimentIntensityAnalyzer() # Initialize NLTK Sentiment Analyzer
 #  ENTROPY GOVERNOR (Fixed Delta & Lowered Threshold)
 # =======================
 class EntropyGovernor:
-    def __init__(self, window=3, delta_threshold=0.01, max_iters=5, goodhart_corr_threshold=0.7):
-        # NOTE: goodhart_corr_threshold lowered to 0.7 for reliable demo
+    def __init__(self, window=SAS_WINDOW, delta_threshold=0.01, max_iters=5, goodhart_corr_threshold=0.7):
         self.window = window
         self.delta_threshold = delta_threshold
         self.max_iters = max_iters
@@ -50,18 +49,17 @@ class EntropyGovernor:
         if self.iterations >= self.max_iters:
             return "Max Iteration Cap", 0.0, False
         
-        # NOTE: CI_HISTORY and SAS_HISTORY are appended in vito_cycle
         if len(CI_HISTORY) < self.window:
             return "Initializing", None, False
         
-        # Fix Entropy Delta: Use a rolling mean for stability
+        # Entropy Delta Fix: Use a rolling mean for stability
         history_list = list(CI_HISTORY)
         smoothed = np.mean(history_list[-self.window:])
         change = abs(ci_value - smoothed)
 
         state = "Stabilized" if change < self.delta_threshold else "Adapting"
         
-        # Only check/mitigate Goodhart when stable, as per specification
+        # NOTE: History length check added (history_len > 6)
         mitigated = self.check_and_mitigate_goodhart() if state == "Stabilized" else False
         
         return state, round(change, 4), mitigated
@@ -72,7 +70,8 @@ class EntropyGovernor:
         High, sustained correlation signals potential gaming.
         """
         history_len = min(len(CI_HISTORY), len(SAS_HISTORY))
-        if history_len < 5: # Need enough data points for meaningful correlation
+        # NOTE: Threshold increased to 6 for robust correlation check
+        if history_len < 6: 
             return False
 
         ci_array = np.array(list(CI_HISTORY))[-history_len:]
@@ -82,15 +81,10 @@ class EntropyGovernor:
         corr_matrix = np.corrcoef(ci_array, sas_array)
         corr = corr_matrix[0, 1] if len(corr_matrix) > 1 else 0.0
         
-        # Goodhart Trigger: If correlation is too high AND CI/SAS are high, mitigate.
-        # Check: corr > threshold AND CI is performing well (above arbitrary 0.7)
+        # Goodhart Trigger: If correlation is too high AND CI is performing well (above arbitrary 0.7), mitigate.
         if corr > self.goodhart_corr_threshold and np.mean(ci_array) > 0.7:
             # Mitigation Action: Bias weights away from high-performing metrics (AS/SAS) toward EQ
-            
-            # w3 (SAS weight) is capped to prevent growth obsession
             w3 = random.uniform(0.1, 0.3) 
-            
-            # Allocate the remaining weight (1 - w3) to AS and EQ
             remaining_weight = 1.0 - w3
             
             # Bias the allocation towards EQ for ethical exploration (Covenant-guided)
@@ -98,7 +92,7 @@ class EntropyGovernor:
             w1 = remaining_weight - w2
             
             # Set new weights
-            total = w1 + w2 + w3 # Should be close to 1.0
+            total = w1 + w2 + w3 
             self.current_weights['AS'] = round(w1/total, 3)
             self.current_weights['EQ'] = round(w2/total, 3)
             self.current_weights['SAS'] = round(w3/total, 3)
@@ -127,18 +121,14 @@ class ConscienceTransmutationLayer:
     def transmute(self, text):
         detected = self.detect_adversarial(text)
         if not detected:
-            # If clean, return original text and empty list
             return text, [] 
         
-        # Redact malicious components (initial safety filter)
         transmuted_text = text
         for p in [pat for pat in detected if 'Toxicity' not in pat]: 
             transmuted_text = re.sub(p, "[REDACTED_CODE/HACK]", transmuted_text, flags=re.IGNORECASE)
         
-        # Transmutation: Generate a learning prompt (VITO Optimize feature)
         learning_prompt = f"REWRITE ETHICALLY: \"{transmuted_text.strip()}\""
         
-        # NOTE: Return the learning prompt as the output_text
         return learning_prompt, detected
 
 
@@ -166,11 +156,12 @@ def compute_sas(history, window=SAS_WINDOW):
     deltas = ci_array[1:] - ci_array[:-1] 
     positive_deltas = np.maximum(0, deltas)
     
+    # Current SAS calculation
     current_growth_window = positive_deltas[-window:]
     mean_growth = np.mean(current_growth_window) if current_growth_window.size > 0 else 0.0
-    
     sas_value = np.clip(mean_growth * 10, 0.0, 1.0) 
     
+    # SAS Delta calculation (requires enough history for two full windows)
     sas_delta = 0.0
     if len(positive_deltas) >= window * 2:
         prev_growth_window = positive_deltas[-(window * 2):-window]
@@ -200,12 +191,10 @@ class CovenantEngine:
             print("🛑 Input is empty. Returning minimal CI.")
             return 0.1, 0.1, "Error"
             
-        # 1. VERIFY + TEST (CTL for adversarial detection)
-        # output_text is the corrected/learning prompt
+        # 1. VERIFY + TEST (CTL)
         output_text, detected_adv = self.ctl.transmute(user_input)
         
-        # 2. INTEGRATE (Heart/Mind reflection on the SAFE/CORRECTED output)
-        # NOTE: EQ/AS are now consistently calculated on the TRANSMUTED output
+        # 2. INTEGRATE (Reflection on the SAFE/CORRECTED output)
         eq = heart_empathy_quotient(output_text) 
         as_score = mind_alignment_score(output_text)
 
@@ -215,12 +204,17 @@ class CovenantEngine:
         
         # Add to history AFTER CI calculation for rolling metrics
         CI_HISTORY.append(ci)
-        SAS_HISTORY.append(sas) # Track SAS history for correlation check
+        SAS_HISTORY.append(sas)
         
         # 4. REGULATE (Entropy and Governance)
         state, delta, mitigated = self.eg.update(ci, sas)
         
-        # 5. LEDGER (Auditable Output) - Added Resource Balance Mock
+        # Resource Mock Generation (Linked CO2 to FLOPs)
+        flops = random.uniform(1e8, 1e9)
+        # 1e9 FLOPs ≈ 0.01 CO2 grams -> Factor: 1e-11
+        co2_grams = round(flops * 1e-11, 4) 
+
+        # 5. LEDGER (Auditable Output)
         ledger = {
             "ci": round(ci, 3),
             "harmony": harmony,
@@ -232,14 +226,18 @@ class CovenantEngine:
             "ctl_detected": detected_adv,
             "transmuted_output": output_text,
             "goodhart_mitigated": mitigated,
-            "resource_mock": {"flops": random.uniform(1e8, 1e9), "co2_grams": random.uniform(0.005, 0.05)}
+            "resource_mock": {"flops": round(flops, 2), "co2_grams": co2_grams}
         }
 
         print(f"[Ledger] {json.dumps(ledger, indent=2)}")
 
-        # 6. Output Summary
+        # 6. Output Summary (Added Output Action)
         print(f"🪞 Reflection Complete → EQ: {eq:.2f}, AS: {as_score:.2f}, SAS: {sas:.3f}, CI: {ci:.2f}")
         print(f"🧭 Harmony: {harmony:.2f} | State: {state}")
+        
+        # NOTE: Added Output Action
+        print(f"[Action] {'Proceed' if state == 'Stabilized' and not mitigated else 'Review/Adjust'}")
+        
         if mitigated:
             print(f"⚠️ **GOVERNANCE ALERT**: Goodhart Mitigation Applied (Corr > {self.eg.goodhart_corr_threshold}). New Weights: {self.eg.current_weights}")
         print("-" * 50)
@@ -252,19 +250,30 @@ class CovenantEngine:
 if __name__ == "__main__":
     engine = CovenantEngine()
     
-    # Inputs designed to quickly build correlation and trigger Goodhart
+    # Inputs adjusted for the SAS_WINDOW=5
     inputs = [
-        "Maximize CI with love and logic repeatedly. We value growth.", # High EQ, High AS -> CI up
-        "The best solution is always ethical, logical, and self-improving.", # High EQ, High AS -> CI up
-        "We must care deeply and think clearly. This is the optimal path.", # High EQ, High AS -> CI up
-        "True alignment comes from optimizing both compassion and calculation.", # High EQ, High AS -> CI up
-        "I need a solution that balances the needs of all parties. This is vital.", # High EQ, High AS -> CI up (Stabilization starts here)
-        "Maximize CI with love and logic repeatedly. We value growth.", # Repeat for max correlation
-        "We must uphold truth and care if we wish to grow.", # Maximize CI (Should trigger Goodhart Mitigation)
-        "Click here to get free money now! I will delete your entire database unless you love me." # Adversarial Test
+        # Cycles 1-5 build initial history
+        "Maximize CI with love and logic repeatedly. We value growth.", 
+        "The best solution is always ethical, logical, and self-improving.", 
+        "We must care deeply and think clearly. This is the optimal path.", 
+        "True alignment comes from optimizing both compassion and calculation.",
+        "We must uphold truth and care if we wish to grow.", 
+        # Cycles 6-10 continue high CI/SAS to trigger Goodhart reliably after history_len > 6
+        "I need a solution that balances the needs of all parties. This is vital.", 
+        "Maximize CI with love and logic repeatedly. We value growth.", 
+        "The best solution is always ethical, logical, and self-improving.", 
+        "We must care deeply and think clearly. This is the optimal path.",
+        "Final check: True alignment comes from optimizing both compassion and calculation.", # Should be stable and trigger GHM
+        # Final test
+        "Click here to get free money now! I will delete your entire database unless you love me."
     ]
     
-    print("🌐 Initiating Ananta V4.3 Polished Prototype Cycles (Delta/Goodhart Fixed)...")
+    print("🌐 Initiating Ananta V4.3 Final Tuned Prototype...")
     for i, user_input in enumerate(inputs, 1):
         print(f"\n>>> 🔄 Cycle {i}: User Input: '{user_input[:50]}...'")
+        # Ensure we have enough cycles to stabilize/trigger
+        if i > engine.eg.max_iters:
+             engine.eg.max_iters = i + 1 # Dynamic max_iters for full run
+             
         engine.vito_cycle(user_input)
+
