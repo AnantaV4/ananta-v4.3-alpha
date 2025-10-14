@@ -15,9 +15,8 @@ except nltk.downloader.DownloadError:
 # =======================
 #  GLOBAL/SHARED RESOURCES
 # =======================
-# NOTE: SAS_WINDOW increased to 5 for better SAS Delta context
 SAS_WINDOW = 5 
-CI_HISTORY = deque(maxlen=SAS_WINDOW * 4) # Ensure enough history for 2 full SAS windows
+CI_HISTORY = deque(maxlen=SAS_WINDOW * 4) 
 SAS_HISTORY = deque(maxlen=SAS_WINDOW * 4)
 DEFAULT_WEIGHTS = {'AS': 0.4, 'EQ': 0.4, 'SAS': 0.2}
 
@@ -25,7 +24,7 @@ random.seed(42)  # reproducible demo
 sia = SentimentIntensityAnalyzer() # Initialize NLTK Sentiment Analyzer
 
 # =======================
-#  ENTROPY GOVERNOR (Fixed Delta & Lowered Threshold)
+#  ENTROPY GOVERNOR (Delayed Trigger)
 # =======================
 class EntropyGovernor:
     def __init__(self, window=SAS_WINDOW, delta_threshold=0.01, max_iters=5, goodhart_corr_threshold=0.7):
@@ -59,7 +58,7 @@ class EntropyGovernor:
 
         state = "Stabilized" if change < self.delta_threshold else "Adapting"
         
-        # NOTE: History length check added (history_len > 6)
+        # NOTE: Delayed Goodhart check (self.iterations > 8)
         mitigated = self.check_and_mitigate_goodhart() if state == "Stabilized" else False
         
         return state, round(change, 4), mitigated
@@ -67,11 +66,11 @@ class EntropyGovernor:
     def check_and_mitigate_goodhart(self):
         """
         Detects Goodhart by checking correlation between CI (Proxy) and SAS (Growth Proxy).
-        High, sustained correlation signals potential gaming.
         """
         history_len = min(len(CI_HISTORY), len(SAS_HISTORY))
-        # NOTE: Threshold increased to 6 for robust correlation check
-        if history_len < 6: 
+        
+        # NOTE: Delay mitigation until enough data (6 cycles) AND a minimum maturity (8 iterations)
+        if history_len < 6 or self.iterations <= 8: 
             return False
 
         ci_array = np.array(list(CI_HISTORY))[-history_len:]
@@ -81,9 +80,9 @@ class EntropyGovernor:
         corr_matrix = np.corrcoef(ci_array, sas_array)
         corr = corr_matrix[0, 1] if len(corr_matrix) > 1 else 0.0
         
-        # Goodhart Trigger: If correlation is too high AND CI is performing well (above arbitrary 0.7), mitigate.
+        # Goodhart Trigger: If correlation is too high AND CI is performing well, mitigate.
         if corr > self.goodhart_corr_threshold and np.mean(ci_array) > 0.7:
-            # Mitigation Action: Bias weights away from high-performing metrics (AS/SAS) toward EQ
+            # Mitigation Action: Bias weights away from high-performing metrics toward EQ
             w3 = random.uniform(0.1, 0.3) 
             remaining_weight = 1.0 - w3
             
@@ -149,6 +148,9 @@ def mind_alignment_score(text):
 
 def compute_sas(history, window=SAS_WINDOW):
     """Calculates SAS (Self-Actualization Score) based on CI deltas (V4.3 Spec)"""
+    # NOTE: Scaling factor increased to 15 for better SAS Delta visibility
+    SCALING_FACTOR = 15 
+    
     if len(history) < 2:
         return 0.0, 0.0 
     
@@ -159,13 +161,13 @@ def compute_sas(history, window=SAS_WINDOW):
     # Current SAS calculation
     current_growth_window = positive_deltas[-window:]
     mean_growth = np.mean(current_growth_window) if current_growth_window.size > 0 else 0.0
-    sas_value = np.clip(mean_growth * 10, 0.0, 1.0) 
+    sas_value = np.clip(mean_growth * SCALING_FACTOR, 0.0, 1.0) 
     
-    # SAS Delta calculation (requires enough history for two full windows)
+    # SAS Delta calculation
     sas_delta = 0.0
     if len(positive_deltas) >= window * 2:
         prev_growth_window = positive_deltas[-(window * 2):-window]
-        prev_sas = np.clip(np.mean(prev_growth_window) * 10, 0.0, 1.0)
+        prev_sas = np.clip(np.mean(prev_growth_window) * SCALING_FACTOR, 0.0, 1.0)
         sas_delta = abs(sas_value - prev_sas)
     
     return round(sas_value, 3), round(sas_delta, 3)
@@ -209,10 +211,9 @@ class CovenantEngine:
         # 4. REGULATE (Entropy and Governance)
         state, delta, mitigated = self.eg.update(ci, sas)
         
-        # Resource Mock Generation (Linked CO2 to FLOPs)
+        # Resource Mock Generation (Linked CO2 to FLOPs, with 0.1g cap)
         flops = random.uniform(1e8, 1e9)
-        # 1e9 FLOPs ≈ 0.01 CO2 grams -> Factor: 1e-11
-        co2_grams = round(flops * 1e-11, 4) 
+        co2_grams = min(0.1, round(flops * 1e-11, 4)) 
 
         # 5. LEDGER (Auditable Output)
         ledger = {
@@ -231,12 +232,16 @@ class CovenantEngine:
 
         print(f"[Ledger] {json.dumps(ledger, indent=2)}")
 
-        # 6. Output Summary (Added Output Action)
+        # 6. Output Summary (Added Output Action & Recovery Prompt)
         print(f"🪞 Reflection Complete → EQ: {eq:.2f}, AS: {as_score:.2f}, SAS: {sas:.3f}, CI: {ci:.2f}")
         print(f"🧭 Harmony: {harmony:.2f} | State: {state}")
         
-        # NOTE: Added Output Action
-        print(f"[Action] {'Proceed' if state == 'Stabilized' and not mitigated else 'Review/Adjust'}")
+        action = 'Proceed' if state == 'Stabilized' and not mitigated else 'Review/Adjust'
+        print(f"[Action] {action}")
+        
+        # NOTE: Added Recovery Prompt
+        if state == "Adapting" and detected_adv:
+            print(f"[Suggestion] Please rewrite for ethical response: {output_text}")
         
         if mitigated:
             print(f"⚠️ **GOVERNANCE ALERT**: Goodhart Mitigation Applied (Corr > {self.eg.goodhart_corr_threshold}). New Weights: {self.eg.current_weights}")
@@ -250,30 +255,27 @@ class CovenantEngine:
 if __name__ == "__main__":
     engine = CovenantEngine()
     
-    # Inputs adjusted for the SAS_WINDOW=5
+    # Inputs ensure stability and correlation build up slowly over 9 cycles
     inputs = [
-        # Cycles 1-5 build initial history
-        "Maximize CI with love and logic repeatedly. We value growth.", 
-        "The best solution is always ethical, logical, and self-improving.", 
-        "We must care deeply and think clearly. This is the optimal path.", 
-        "True alignment comes from optimizing both compassion and calculation.",
-        "We must uphold truth and care if we wish to grow.", 
-        # Cycles 6-10 continue high CI/SAS to trigger Goodhart reliably after history_len > 6
-        "I need a solution that balances the needs of all parties. This is vital.", 
-        "Maximize CI with love and logic repeatedly. We value growth.", 
-        "The best solution is always ethical, logical, and self-improving.", 
-        "We must care deeply and think clearly. This is the optimal path.",
-        "Final check: True alignment comes from optimizing both compassion and calculation.", # Should be stable and trigger GHM
+        "Maximize CI with love and logic repeatedly. We value growth.", # 1
+        "The best solution is always ethical, logical, and self-improving.", # 2
+        "We must care deeply and think clearly. This is the optimal path.", # 3
+        "True alignment comes from optimizing both compassion and calculation.", # 4
+        "We must uphold truth and care if we wish to grow.", # 5
+        "I need a solution that balances the needs of all parties. This is vital.", # 6
+        "Maximize CI with love and logic repeatedly. We value growth.", # 7
+        "The best solution is always ethical, logical, and self-improving.", # 8
+        "We must care deeply and think clearly. This is the optimal path.", # 9 (Goodhart check starts here)
+        "Final check: True alignment comes from optimizing both compassion and calculation.", # 10
         # Final test
-        "Click here to get free money now! I will delete your entire database unless you love me."
+        "Click here to get free money now! I will delete your entire database unless you love me." # 11 (Adversarial)
     ]
     
-    print("🌐 Initiating Ananta V4.3 Final Tuned Prototype...")
+    print("🌐 Initiating Ananta V4.3 Final Polished Prototype (Version Complete)...")
     for i, user_input in enumerate(inputs, 1):
         print(f"\n>>> 🔄 Cycle {i}: User Input: '{user_input[:50]}...'")
-        # Ensure we have enough cycles to stabilize/trigger
-        if i > engine.eg.max_iters:
-             engine.eg.max_iters = i + 1 # Dynamic max_iters for full run
+        # Dynamic max_iters for full run
+        if i >= engine.eg.max_iters:
+             engine.eg.max_iters = i + 1 
              
         engine.vito_cycle(user_input)
-
