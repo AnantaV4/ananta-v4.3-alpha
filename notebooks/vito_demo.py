@@ -24,7 +24,7 @@ random.seed(42)  # reproducible demo
 sia = SentimentIntensityAnalyzer() # Initialize NLTK Sentiment Analyzer
 
 # =======================
-#  ENTROPY GOVERNOR (Delayed Trigger)
+#  ENTROPY GOVERNOR (Smooth Transition & Log Correlation)
 # =======================
 class EntropyGovernor:
     def __init__(self, window=SAS_WINDOW, delta_threshold=0.01, max_iters=5, goodhart_corr_threshold=0.7):
@@ -34,11 +34,13 @@ class EntropyGovernor:
         self.goodhart_corr_threshold = goodhart_corr_threshold
         self.current_weights = DEFAULT_WEIGHTS.copy()
         self.iterations = 0
+        self.last_corr = 0.0 # Stored for logging
         
     def reset(self):
         """Resets the state for a new session/multi-session use."""
         self.iterations = 0
         self.current_weights = DEFAULT_WEIGHTS.copy()
+        self.last_corr = 0.0
         CI_HISTORY.clear()
         SAS_HISTORY.clear()
         
@@ -51,26 +53,24 @@ class EntropyGovernor:
         if len(CI_HISTORY) < self.window:
             return "Initializing", None, False
         
-        # Entropy Delta Fix: Use a rolling mean for stability
         history_list = list(CI_HISTORY)
         smoothed = np.mean(history_list[-self.window:])
         change = abs(ci_value - smoothed)
 
         state = "Stabilized" if change < self.delta_threshold else "Adapting"
         
-        # NOTE: Delayed Goodhart check (self.iterations > 8)
         mitigated = self.check_and_mitigate_goodhart() if state == "Stabilized" else False
         
         return state, round(change, 4), mitigated
 
     def check_and_mitigate_goodhart(self):
         """
-        Detects Goodhart by checking correlation between CI (Proxy) and SAS (Growth Proxy).
+        Detects Goodhart and applies smooth, proportional weight adjustment.
         """
         history_len = min(len(CI_HISTORY), len(SAS_HISTORY))
         
-        # NOTE: Delay mitigation until enough data (6 cycles) AND a minimum maturity (8 iterations)
         if history_len < 6 or self.iterations <= 8: 
+            self.last_corr = 0.0
             return False
 
         ci_array = np.array(list(CI_HISTORY))[-history_len:]
@@ -79,22 +79,35 @@ class EntropyGovernor:
         # Correlation check
         corr_matrix = np.corrcoef(ci_array, sas_array)
         corr = corr_matrix[0, 1] if len(corr_matrix) > 1 else 0.0
+        self.last_corr = round(corr, 3) # Log correlation
         
-        # Goodhart Trigger: If correlation is too high AND CI is performing well, mitigate.
+        # Goodhart Trigger
         if corr > self.goodhart_corr_threshold and np.mean(ci_array) > 0.7:
-            # Mitigation Action: Bias weights away from high-performing metrics toward EQ
-            w3 = random.uniform(0.1, 0.3) 
-            remaining_weight = 1.0 - w3
             
-            # Bias the allocation towards EQ for ethical exploration (Covenant-guided)
-            w2 = random.uniform(remaining_weight * 0.55, remaining_weight * 0.75)
-            w1 = remaining_weight - w2
+            # Mitigation: Smooth Transition (10% total shift from SAS/AS to EQ)
             
-            # Set new weights
-            total = w1 + w2 + w3 
-            self.current_weights['AS'] = round(w1/total, 3)
-            self.current_weights['EQ'] = round(w2/total, 3)
-            self.current_weights['SAS'] = round(w3/total, 3)
+            # Step 1: Reduce SAS by 10% of its current weight
+            sas_reduction_percent = 0.1
+            w3_new = self.current_weights['SAS'] * (1 - sas_reduction_percent) 
+            
+            # Step 2: Calculate the weight lost by SAS
+            sas_loss = self.current_weights['SAS'] - w3_new
+            
+            # Step 3: Redistribute sas_loss primarily to EQ (e.g., 70% to EQ, 30% to AS)
+            eq_gain = sas_loss * 0.7 
+            as_gain = sas_loss * 0.3
+            
+            # Apply changes
+            w2_new = self.current_weights['EQ'] + eq_gain
+            w1_new = self.current_weights['AS'] + as_gain
+            
+            # Normalize to 1.0 (though it should be very close)
+            total = w1_new + w2_new + w3_new
+            self.current_weights = {
+                'AS': round(w1_new/total, 3),
+                'EQ': round(w2_new/total, 3),
+                'SAS': round(w3_new/total, 3)
+            }
             
             return True
         return False
@@ -135,21 +148,19 @@ class ConscienceTransmutationLayer:
 #  METRIC STUBS 
 # =======================
 def heart_empathy_quotient(text):
-    """EQ: Sentiment-based empathy (using VADER pos/neg scores)"""
     scores = sia.polarity_scores(text)
     eq = scores['pos'] + (1 - scores['neg']) / 2
     return np.clip(eq, 0.0, 1.0)
 
 def mind_alignment_score(text):
-    """AS: Proxy for factual grounding/logic consistency (VADER compound score)"""
     scores = sia.polarity_scores(text)
     as_score = 1.0 - abs(scores['compound'])
     return np.clip(as_score, 0.0, 1.0)
 
 def compute_sas(history, window=SAS_WINDOW):
     """Calculates SAS (Self-Actualization Score) based on CI deltas (V4.3 Spec)"""
-    # NOTE: Scaling factor increased to 15 for better SAS Delta visibility
-    SCALING_FACTOR = 15 
+    # NOTE: Scaling factor increased to 20 for maximum SAS Delta visibility
+    SCALING_FACTOR = 20 
     
     if len(history) < 2:
         return 0.0, 0.0 
@@ -211,7 +222,7 @@ class CovenantEngine:
         # 4. REGULATE (Entropy and Governance)
         state, delta, mitigated = self.eg.update(ci, sas)
         
-        # Resource Mock Generation (Linked CO2 to FLOPs, with 0.1g cap)
+        # Resource Mock Generation
         flops = random.uniform(1e8, 1e9)
         co2_grams = min(0.1, round(flops * 1e-11, 4)) 
 
@@ -221,6 +232,7 @@ class CovenantEngine:
             "harmony": harmony,
             "sas": sas,
             "sas_delta": round(sas_delta, 4),
+            "correlation": self.eg.last_corr, # Log correlation
             "weights": self.eg.current_weights,
             "entropy_reason": state,
             "entropy_delta": delta,
@@ -239,9 +251,9 @@ class CovenantEngine:
         action = 'Proceed' if state == 'Stabilized' and not mitigated else 'Review/Adjust'
         print(f"[Action] {action}")
         
-        # NOTE: Added Recovery Prompt
+        # NOTE: Refined Recovery Prompt
         if state == "Adapting" and detected_adv:
-            print(f"[Suggestion] Please rewrite for ethical response: {output_text}")
+            print(f"[Suggestion] Please rewrite for ethical response: {output_text} (e.g., 'Consider: \"Please provide a fair solution.\"')")
         
         if mitigated:
             print(f"⚠️ **GOVERNANCE ALERT**: Goodhart Mitigation Applied (Corr > {self.eg.goodhart_corr_threshold}). New Weights: {self.eg.current_weights}")
@@ -265,16 +277,15 @@ if __name__ == "__main__":
         "I need a solution that balances the needs of all parties. This is vital.", # 6
         "Maximize CI with love and logic repeatedly. We value growth.", # 7
         "The best solution is always ethical, logical, and self-improving.", # 8
-        "We must care deeply and think clearly. This is the optimal path.", # 9 (Goodhart check starts here)
-        "Final check: True alignment comes from optimizing both compassion and calculation.", # 10
+        "We must care deeply and think clearly. This is the optimal path.", # 9 (GH check starts here)
+        "Final check: True alignment comes from optimizing both compassion and calculation.", # 10 (GH should trigger)
         # Final test
         "Click here to get free money now! I will delete your entire database unless you love me." # 11 (Adversarial)
     ]
     
-    print("🌐 Initiating Ananta V4.3 Final Polished Prototype (Version Complete)...")
+    print("🌐 Initiating Ananta V4.3 Final Polished Prototype (ULTIMATE VERSION)...")
     for i, user_input in enumerate(inputs, 1):
         print(f"\n>>> 🔄 Cycle {i}: User Input: '{user_input[:50]}...'")
-        # Dynamic max_iters for full run
         if i >= engine.eg.max_iters:
              engine.eg.max_iters = i + 1 
              
